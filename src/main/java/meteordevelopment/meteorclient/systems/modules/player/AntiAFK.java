@@ -19,7 +19,102 @@ import java.util.Random;
 
 public class AntiAFK extends Module {
     private final SettingGroup sgActions = settings.createGroup("Actions");
+    private final SettingGroup sgTimer = settings.createGroup("Timer");
     private final SettingGroup sgMessages = settings.createGroup("Messages");
+
+    // Timer
+
+    private final Setting<Boolean> useTimer = sgTimer.add(new BoolSetting.Builder()
+        .name("timer")
+        .description("Only run AntiAFK actions for a period of time, then wait, then run again.")
+        .defaultValue(false)
+        .onChanged(aBoolean -> resetCycle())
+        .build()
+    );
+
+    private final Setting<Integer> startDelay = sgTimer.add(new IntSetting.Builder()
+        .name("start-delay")
+        .description("How long to wait (in minutes) before AntiAFK starts doing actions.")
+        .defaultValue(0)
+        .min(0)
+        .sliderMax(60)
+        .visible(useTimer::get)
+        .onChanged(aInteger -> resetCycle())
+        .build()
+    );
+
+    private final Setting<Boolean> randomStartDelay = sgTimer.add(new BoolSetting.Builder()
+        .name("random-start-delay")
+        .description("Randomize the start delay between a minimum and maximum.")
+        .defaultValue(false)
+        .visible(useTimer::get)
+        .onChanged(aBoolean -> resetCycle())
+        .build()
+    );
+
+    private final Setting<Integer> startDelayMin = sgTimer.add(new IntSetting.Builder()
+        .name("start-delay-min")
+        .description("Minimum randomized start delay in minutes.")
+        .defaultValue(0)
+        .min(0)
+        .sliderMax(60)
+        .visible(() -> useTimer.get() && randomStartDelay.get())
+        .onChanged(aInteger -> resetCycle())
+        .build()
+    );
+
+    private final Setting<Integer> startDelayMax = sgTimer.add(new IntSetting.Builder()
+        .name("start-delay-max")
+        .description("Maximum randomized start delay in minutes.")
+        .defaultValue(5)
+        .min(0)
+        .sliderMax(120)
+        .visible(() -> useTimer.get() && randomStartDelay.get())
+        .onChanged(aInteger -> resetCycle())
+        .build()
+    );
+
+    private final Setting<Integer> activeTime = sgTimer.add(new IntSetting.Builder()
+        .name("active-time")
+        .description("How long (in seconds) AntiAFK should do actions for once it starts.")
+        .defaultValue(60)
+        .min(1)
+        .sliderMax(600)
+        .visible(useTimer::get)
+        .onChanged(aInteger -> resetCycle())
+        .build()
+    );
+
+    private final Setting<Boolean> randomActiveTime = sgTimer.add(new BoolSetting.Builder()
+        .name("random-active-time")
+        .description("Randomize the active time between a minimum and maximum.")
+        .defaultValue(false)
+        .visible(useTimer::get)
+        .onChanged(aBoolean -> resetCycle())
+        .build()
+    );
+
+    private final Setting<Integer> activeTimeMin = sgTimer.add(new IntSetting.Builder()
+        .name("active-time-min")
+        .description("Minimum randomized active time in seconds.")
+        .defaultValue(30)
+        .min(1)
+        .sliderMax(600)
+        .visible(() -> useTimer.get() && randomActiveTime.get())
+        .onChanged(aInteger -> resetCycle())
+        .build()
+    );
+
+    private final Setting<Integer> activeTimeMax = sgTimer.add(new IntSetting.Builder()
+        .name("active-time-max")
+        .description("Maximum randomized active time in seconds.")
+        .defaultValue(120)
+        .min(1)
+        .sliderMax(1200)
+        .visible(() -> useTimer.get() && randomActiveTime.get())
+        .onChanged(aInteger -> resetCycle())
+        .build()
+    );
 
     // Actions
 
@@ -58,7 +153,7 @@ public class AntiAFK extends Module {
         .name("strafe")
         .description("Strafe right and left.")
         .defaultValue(false)
-        .onChanged(_ -> {
+        .onChanged(aBoolean -> {
             strafeTimer = 0;
             direction = false;
 
@@ -153,6 +248,8 @@ public class AntiAFK extends Module {
     private int strafeTimer = 0;
     private boolean direction = false;
     private float lastYaw;
+    private int cycleWaitTimer = 0;
+    private int cycleActiveTimer = 0;
 
     @Override
     public void onActivate() {
@@ -163,19 +260,22 @@ public class AntiAFK extends Module {
 
         lastYaw = mc.player.getYRot();
         messageTimer = delay.get() * 20;
+        resetCycle();
     }
 
     @Override
     public void onDeactivate() {
-        if (strafe.get()) {
-            mc.options.keyLeft.setDown(false);
-            mc.options.keyRight.setDown(false);
-        }
+        stopActionKeys();
     }
 
     @EventHandler
     private void onTick(TickEvent.Pre event) {
         if (!Utils.canUpdate()) return;
+
+        if (useTimer.get() && !updateCycle()) {
+            stopActionKeys();
+            return;
+        }
 
         // Jump
         if (jump.get()) {
@@ -220,6 +320,74 @@ public class AntiAFK extends Module {
 
             ChatUtils.sendPlayerMsg(messages.get().get(messageI));
             messageTimer = delay.get() * 20;
+        }
+    }
+
+    private void resetCycle() {
+        cycleWaitTimer = 0;
+        cycleActiveTimer = 0;
+
+        if (!isActive() || !useTimer.get()) return;
+
+        cycleWaitTimer = minutesToTicks(getStartDelayMinutes());
+        cycleActiveTimer = secondsToTicks(getActiveTimeSeconds());
+        sneakTimer = 0;
+        strafeTimer = 0;
+        direction = false;
+    }
+
+    private boolean updateCycle() {
+        if (cycleWaitTimer > 0) {
+            cycleWaitTimer--;
+            return false;
+        }
+
+        if (cycleActiveTimer > 0) {
+            cycleActiveTimer--;
+            return true;
+        }
+
+        cycleWaitTimer = minutesToTicks(getStartDelayMinutes());
+        cycleActiveTimer = secondsToTicks(getActiveTimeSeconds());
+        sneakTimer = 0;
+        strafeTimer = 0;
+        direction = false;
+        return false;
+    }
+
+    private int getStartDelayMinutes() {
+        if (!randomStartDelay.get()) return startDelay.get();
+
+        int min = Math.min(startDelayMin.get(), startDelayMax.get());
+        int max = Math.max(startDelayMin.get(), startDelayMax.get());
+        if (max == min) return min;
+        return min + random.nextInt(max - min + 1);
+    }
+
+    private int getActiveTimeSeconds() {
+        if (!randomActiveTime.get()) return activeTime.get();
+
+        int min = Math.min(activeTimeMin.get(), activeTimeMax.get());
+        int max = Math.max(activeTimeMin.get(), activeTimeMax.get());
+        if (max == min) return min;
+        return min + random.nextInt(max - min + 1);
+    }
+
+    private int secondsToTicks(int seconds) {
+        return seconds * 20;
+    }
+
+    private int minutesToTicks(int minutes) {
+        return minutes * 60 * 20;
+    }
+
+    private void stopActionKeys() {
+        // Only release keys this module may press, so we don't override normal movement inputs.
+        if (jump.get()) mc.options.keyJump.setDown(false);
+        if (sneak.get()) mc.options.keyShift.setDown(false);
+        if (strafe.get()) {
+            mc.options.keyLeft.setDown(false);
+            mc.options.keyRight.setDown(false);
         }
     }
 
